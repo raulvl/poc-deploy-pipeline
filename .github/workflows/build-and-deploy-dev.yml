@@ -1,0 +1,110 @@
+name: 🔨 Build and Deploy to Dev
+
+on:
+  push:
+    branches: [develop]
+
+permissions:
+  contents: read
+  id-token: write # Requerido para Workload Identity Federation
+
+jobs:
+  # ─────────────────────────────────────────
+  # JOB 1: Build de imagen y push a Artifact Registry
+  # ─────────────────────────────────────────
+  build:
+    name: 🔨 Build Image
+    runs-on: ubuntu-latest
+    environment: poc-dev
+    outputs:
+      sha: ${{ steps.meta.outputs.sha }}
+      image: ${{ steps.meta.outputs.image }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Autenticar en GCP (Workload Identity)
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.WIF_PROVIDER }}
+          service_account: ${{ vars.SA_EMAIL }}
+
+      - name: Configurar Docker para Artifact Registry
+        run: gcloud auth configure-docker ${{ vars.GCP_REGION }}-docker.pkg.dev --quiet
+
+      - name: Build y push de imagen
+        id: meta
+        run: |
+          SHA=$(git rev-parse --short HEAD)
+          IMAGE="${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.PROJECT_ID }}/${{ vars.AR_REPO }}/poc-service"
+
+          echo "Building SHA: $SHA"
+          docker build --build-arg BUILD_SHA=$SHA -t $IMAGE:$SHA -t $IMAGE:dev .
+
+          docker push $IMAGE:$SHA
+          docker push $IMAGE:dev
+
+          echo "sha=$SHA" >> $GITHUB_OUTPUT
+          echo "image=$IMAGE" >> $GITHUB_OUTPUT
+          echo "✅ Push de $IMAGE:$SHA y $IMAGE:dev"
+
+  # ─────────────────────────────────────────
+  # JOB 2: Simular migraciones de BD (dev)
+  # ─────────────────────────────────────────
+  migrations-dev:
+    name: 🗄️ Migraciones (Dev)
+    needs: build
+    runs-on: ubuntu-latest
+    environment: poc-dev
+
+    steps:
+      - name: Autenticar en GCP
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.WIF_PROVIDER }}
+          service_account: ${{ vars.SA_EMAIL }}
+
+      - name: Ejecutar migraciones
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "Ejecutando migraciones en BD DEV"
+          echo "SHA: ${{ needs.build.outputs.sha }}"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          # POC: simulado con echo
+          # REAL: gcloud run jobs execute migration-job --wait --region=${{ vars.GCP_REGION }}
+          sleep 2
+          echo "✅ Migraciones completadas"
+
+  # ─────────────────────────────────────────
+  # JOB 3: Deploy a Cloud Run (dev)
+  # ─────────────────────────────────────────
+  deploy-dev:
+    name: 🚀 Deploy a Dev
+    needs: [build, migrations-dev]
+    runs-on: ubuntu-latest
+    environment: poc-dev
+
+    steps:
+      - name: Autenticar en GCP
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.WIF_PROVIDER }}
+          service_account: ${{ vars.SA_EMAIL }}
+
+      - name: Deploy a Cloud Run (dev)
+        uses: google-github-actions/deploy-cloudrun@v2
+        with:
+          service: poc-service-dev
+          image: "${{ needs.build.outputs.image }}:${{ needs.build.outputs.sha }}"
+          region: ${{ vars.GCP_REGION }}
+          project_id: ${{ vars.PROJECT_ID }}
+          env_vars: |
+            APP_VERSION=${{ needs.build.outputs.sha }}
+
+      - name: Verificar deploy
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "✅ SHA ${{ needs.build.outputs.sha }} desplegado en dev"
+          echo "Imagen: ${{ needs.build.outputs.image }}:${{ needs.build.outputs.sha }}"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
