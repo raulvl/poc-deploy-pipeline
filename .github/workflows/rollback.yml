@@ -1,0 +1,63 @@
+name: ⏪ Rollback
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: "SHA tag al que revertir (ej. abc1234)"
+        required: true
+        type: string
+      environment:
+        description: "Entorno objetivo"
+        required: true
+        type: choice
+        options:
+          - dev
+          - staging
+          - prod
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  rollback:
+    name: ⏪ Rollback ${{ inputs.environment }} → ${{ inputs.image_tag }}
+    runs-on: ubuntu-latest
+    environment: poc-${{ inputs.environment }}
+
+    steps:
+      - name: Autenticar en GCP
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.WIF_PROVIDER }}
+          service_account: ${{ vars.SA_EMAIL }}
+
+      - name: Verificar que la imagen de rollback existe
+        run: |
+          IMAGE="${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.PROJECT_ID }}/${{ vars.AR_REPO }}/poc-service:${{ inputs.image_tag }}"
+          echo "Verificando imagen de rollback: $IMAGE"
+          gcloud artifacts docker images describe $IMAGE \
+            --project=${{ vars.PROJECT_ID }} \
+            --quiet
+          echo "✅ Imagen de rollback confirmada"
+
+      - name: Revertir el servicio de Cloud Run
+        id: rollback
+        uses: google-github-actions/deploy-cloudrun@v2
+        with:
+          service: poc-service-${{ inputs.environment }}
+          image: "${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.PROJECT_ID }}/${{ vars.AR_REPO }}/poc-service:${{ inputs.image_tag }}"
+          region: ${{ vars.GCP_REGION }}
+          project_id: ${{ vars.PROJECT_ID }}
+          env_vars: |
+            APP_VERSION=${{ inputs.image_tag }}
+
+      - name: Resumen
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "⏪ REVERTIDO"
+          echo "Entorno:  ${{ inputs.environment }}"
+          echo "Image tag: ${{ inputs.image_tag }}"
+          echo "URL:      ${{ steps.rollback.outputs.url }}"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
