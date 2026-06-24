@@ -1,0 +1,176 @@
+name: 🚢 Promover a Entorno
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  # ─────────────────────────────────────────
+  # JOB 1: Resolver SHA y entorno objetivo desde el git tag
+  # ─────────────────────────────────────────
+  resolve:
+    name: 🔍 Resolver Tag
+    runs-on: ubuntu-latest
+    outputs:
+      sha: ${{ steps.info.outputs.sha }}
+      environment: ${{ steps.info.outputs.environment }}
+      gh_environment: ${{ steps.info.outputs.gh_environment }}
+      tag: ${{ steps.info.outputs.tag }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolver SHA y entorno objetivo
+        id: info
+        run: |
+          SHA=$(git rev-list -n 1 ${{ github.ref_name }} | cut -c1-7)
+          TAG="${{ github.ref_name }}"
+
+          # Tags que terminan en -staging van a staging; los demás van a prod
+          if [[ "$TAG" == *"-staging" ]]; then
+            ENV="staging"
+            GH_ENV="poc-staging"
+          else
+            ENV="prod"
+            GH_ENV="poc-prod"
+          fi
+
+          echo "sha=$SHA"         >> $GITHUB_OUTPUT
+          echo "environment=$ENV" >> $GITHUB_OUTPUT
+          echo "gh_environment=$GH_ENV" >> $GITHUB_OUTPUT
+          echo "tag=$TAG"         >> $GITHUB_OUTPUT
+
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "Tag:     $TAG"
+          echo "SHA:     $SHA"
+          echo "Destino: $ENV"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+  # ─────────────────────────────────────────
+  # JOB 2: Verificar que la imagen existe en Artifact Registry
+  # ─────────────────────────────────────────
+  verify-image:
+    name: ✅ Verificar Imagen
+    needs: resolve
+    runs-on: ubuntu-latest
+    environment: ${{ needs.resolve.outputs.gh_environment }}
+
+    steps:
+      - name: Autenticar en GCP
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.WIF_PROVIDER }}
+          service_account: ${{ vars.SA_EMAIL }}
+
+      - name: Verificar que la imagen existe en Artifact Registry
+        run: |
+          SHA="${{ needs.resolve.outputs.sha }}"
+          IMAGE="${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.PROJECT_ID }}/${{ vars.AR_REPO }}/poc-service:$SHA"
+
+          echo "Verificando: $IMAGE"
+          gcloud artifacts docker images describe $IMAGE \
+            --project=${{ vars.PROJECT_ID }} \
+            --quiet
+
+          echo "✅ Imagen $SHA confirmada en Artifact Registry — sin rebuild"
+
+  # ─────────────────────────────────────────
+  # JOB 3: Ejecutar migraciones en el entorno objetivo
+  # ─────────────────────────────────────────
+  run-migrations:
+    name: 🗄️ Ejecutar Migraciones
+    needs: [resolve, verify-image]
+    runs-on: ubuntu-latest
+    environment: ${{ needs.resolve.outputs.gh_environment }}
+
+    steps:
+      - name: Autenticar en GCP
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.WIF_PROVIDER }}
+          service_account: ${{ vars.SA_EMAIL }}
+
+      - name: Ejecutar migraciones en ${{ needs.resolve.outputs.environment }}
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "Ejecutando migraciones en BD ${{ needs.resolve.outputs.environment }}"
+          echo "SHA: ${{ needs.resolve.outputs.sha }}"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          # POC: simulado
+          # REAL: gcloud run jobs execute migration-job-${{ needs.resolve.outputs.environment }} --wait
+          sleep 2
+          echo "✅ Migraciones OK"
+
+  # ─────────────────────────────────────────
+  # JOB 4: Gate de aprobación humana
+  # Se aplica automáticamente mediante la protección del GitHub Environment poc-prod.
+  # poc-staging no tiene protección, por lo que este job pasa inmediatamente para staging.
+  # ─────────────────────────────────────────
+  approve:
+    name: ⏸️ Esperar Aprobación
+    needs: run-migrations
+    runs-on: ubuntu-latest
+    environment: ${{ needs.resolve.outputs.gh_environment }}
+
+    steps:
+      - run: |
+          echo "✅ Aprobado para ${{ needs.resolve.outputs.environment }}"
+          echo "SHA: ${{ needs.resolve.outputs.sha }}"
+
+  # ─────────────────────────────────────────
+  # JOB 5: Deploy — sin rebuild, solo actualizar el puntero de imagen
+  # ─────────────────────────────────────────
+  deploy:
+    name: 🚀 Deploy (sin rebuild)
+    needs: [resolve, approve]
+    runs-on: ubuntu-latest
+    environment: ${{ needs.resolve.outputs.gh_environment }}
+
+    steps:
+      - name: Autenticar en GCP
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.WIF_PROVIDER }}
+          service_account: ${{ vars.SA_EMAIL }}
+
+      - name: Configurar Docker
+        run: gcloud auth configure-docker ${{ vars.GCP_REGION }}-docker.pkg.dev --quiet
+
+      - name: Deploy a Cloud Run (sin rebuild)
+        id: deploy
+        uses: google-github-actions/deploy-cloudrun@v2
+        with:
+          service: poc-service-${{ needs.resolve.outputs.environment }}
+          image: "${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.PROJECT_ID }}/${{ vars.AR_REPO }}/poc-service:${{ needs.resolve.outputs.sha }}"
+          region: ${{ vars.GCP_REGION }}
+          project_id: ${{ vars.PROJECT_ID }}
+          env_vars: |
+            APP_VERSION=${{ needs.resolve.outputs.sha }}
+
+      - name: Taggear imagen con alias de entorno
+        run: |
+          IMAGE="${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.PROJECT_ID }}/${{ vars.AR_REPO }}/poc-service"
+          SHA="${{ needs.resolve.outputs.sha }}"
+          ENV="${{ needs.resolve.outputs.environment }}"
+
+          gcloud artifacts docker tags add "$IMAGE:$SHA" "$IMAGE:$ENV" \
+            --project=${{ vars.PROJECT_ID }}
+
+          echo "✅ SHA $SHA taggeado como :$ENV"
+
+      - name: Resumen
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "✅ DESPLEGADO"
+          echo "Entorno: ${{ needs.resolve.outputs.environment }}"
+          echo "Tag:     ${{ needs.resolve.outputs.tag }}"
+          echo "SHA:     ${{ needs.resolve.outputs.sha }}"
+          echo "URL:     ${{ steps.deploy.outputs.url }}"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
