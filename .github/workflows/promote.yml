@@ -99,14 +99,8 @@ jobs:
 
       - name: Ejecutar migraciones en ${{ needs.resolve.outputs.environment }}
         run: |
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo "Ejecutando migraciones en BD ${{ needs.resolve.outputs.environment }}"
-          echo "SHA: ${{ needs.resolve.outputs.sha }}"
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          # POC: simulado
-          # REAL: gcloud run jobs execute migration-job-${{ needs.resolve.outputs.environment }} --wait
-          sleep 2
-          echo "✅ Migraciones OK"
+          echo "Simulando fallo de migración..."
+          exit 1   # ← forzar fallo
 
   # ─────────────────────────────────────────
   # JOB 4: Gate de aprobación humana
