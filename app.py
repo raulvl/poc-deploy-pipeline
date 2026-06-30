@@ -104,10 +104,12 @@ def schema():
         )
         fks = cur.fetchall()
 
-        cur.execute("""
-            SELECT version_num FROM poc.alembic_version
-        """)
-        applied = [r[0] for r in cur.fetchall()]
+        try:
+            cur.execute("SELECT version_num FROM poc.alembic_version")
+            applied = sorted([r[0] for r in cur.fetchall()])
+        except Exception:
+            conn.rollback()
+            applied = []
 
         cur.close()
 

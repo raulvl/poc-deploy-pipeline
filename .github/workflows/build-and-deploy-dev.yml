@@ -52,30 +52,58 @@ jobs:
   # ─────────────────────────────────────────
   # JOB 2: Simular migraciones de BD (dev)
   # ─────────────────────────────────────────
+  # migrations-dev:
+  #   name: 🗄️ Migraciones (Dev)
+  #   needs: build
+  #   runs-on: ubuntu-latest
+  #   environment: poc-dev
+
+  #   steps:
+  #     - name: Autenticar en GCP
+  #       uses: google-github-actions/auth@v2
+  #       with:
+  #         workload_identity_provider: ${{ vars.WIF_PROVIDER }}
+  #         service_account: ${{ vars.SA_EMAIL }}
+
+  #     - name: Ejecutar migraciones
+  #       run: |
+  #         echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  #         echo "Ejecutando migraciones en BD DEV"
+  #         echo "SHA: ${{ needs.build.outputs.sha }}"
+  #         echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  #         # POC: simulado con echo
+  #         # REAL: gcloud run jobs execute migration-job --wait --region=${{ vars.GCP_REGION }}
+  #         sleep 2
+  #         echo "✅ Migraciones completadas"
   migrations-dev:
-    name: 🗄️ Migraciones (Dev)
+    name: 🗄️ Run Migrations (Dev)
     needs: build
     runs-on: ubuntu-latest
     environment: poc-dev
 
     steps:
-      - name: Autenticar en GCP
+      - uses: actions/checkout@v4
+
+      - name: Authenticate to GCP
         uses: google-github-actions/auth@v2
         with:
           workload_identity_provider: ${{ vars.WIF_PROVIDER }}
           service_account: ${{ vars.SA_EMAIL }}
 
-      - name: Ejecutar migraciones
-        run: |
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo "Ejecutando migraciones en BD DEV"
-          echo "SHA: ${{ needs.build.outputs.sha }}"
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          # POC: simulado con echo
-          # REAL: gcloud run jobs execute migration-job --wait --region=${{ vars.GCP_REGION }}
-          sleep 2
-          echo "✅ Migraciones completadas"
+      - name: Install dependencies
+        run: pip install alembic sqlalchemy psycopg2-binary
 
+      - name: Run Alembic migrations (dev)
+        env:
+          PSC_IP: ${{ vars.PSC_IP }}
+          DB_USER: ${{ vars.DB_USER }}
+          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+          DB_NAME: poc_dev
+        run: |
+          echo "Target: $DB_NAME @ $PSC_IP"
+          alembic history --indicate-current
+          alembic upgrade head
+          echo "✅ Migraciones aplicadas en poc_dev"
   # ─────────────────────────────────────────
   # JOB 3: Deploy a Cloud Run (dev)
   # ─────────────────────────────────────────

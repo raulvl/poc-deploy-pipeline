@@ -84,30 +84,61 @@ jobs:
   # ─────────────────────────────────────────
   # JOB 3: Ejecutar migraciones en el entorno objetivo
   # ─────────────────────────────────────────
+  # run-migrations:
+  #   name: 🗄️ Ejecutar Migraciones
+  #   needs: [resolve, verify-image]
+  #   runs-on: ubuntu-latest
+  #   environment: ${{ needs.resolve.outputs.gh_environment }}
+
+  #   steps:
+  #     - name: Autenticar en GCP
+  #       uses: google-github-actions/auth@v2
+  #       with:
+  #         workload_identity_provider: ${{ vars.WIF_PROVIDER }}
+  #         service_account: ${{ vars.SA_EMAIL }}
+
+  #     - name: Ejecutar migraciones en ${{ needs.resolve.outputs.environment }}
+  #       run: |
+  #         echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  #         echo "Ejecutando migraciones en BD ${{ needs.resolve.outputs.environment }}"
+  #         echo "SHA: ${{ needs.resolve.outputs.sha }}"
+  #         echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  #         # POC: simulado
+  #         # REAL: gcloud run jobs execute migration-job-${{ needs.resolve.outputs.environment }} --wait
+  #         sleep 2
+  #         echo "✅ Migraciones OK"
   run-migrations:
-    name: 🗄️ Ejecutar Migraciones
+    name: 🗄️ Run Migrations (${{ needs.resolve.outputs.environment }})
     needs: [resolve, verify-image]
     runs-on: ubuntu-latest
     environment: ${{ needs.resolve.outputs.gh_environment }}
 
     steps:
-      - name: Autenticar en GCP
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }} # checkout del tag exacto
+
+      - name: Authenticate to GCP
         uses: google-github-actions/auth@v2
         with:
           workload_identity_provider: ${{ vars.WIF_PROVIDER }}
           service_account: ${{ vars.SA_EMAIL }}
 
-      - name: Ejecutar migraciones en ${{ needs.resolve.outputs.environment }}
-        run: |
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo "Ejecutando migraciones en BD ${{ needs.resolve.outputs.environment }}"
-          echo "SHA: ${{ needs.resolve.outputs.sha }}"
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          # POC: simulado
-          # REAL: gcloud run jobs execute migration-job-${{ needs.resolve.outputs.environment }} --wait
-          sleep 2
-          echo "✅ Migraciones OK"
+      - name: Install dependencies
+        run: pip install alembic sqlalchemy psycopg2-binary
 
+      - name: Run Alembic migrations (${{ needs.resolve.outputs.environment }})
+        env:
+          PSC_IP: ${{ vars.PSC_IP }}
+          DB_USER: ${{ vars.DB_USER }}
+          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+          DB_NAME: poc_${{ needs.resolve.outputs.environment }}
+        run: |
+          echo "Target: $DB_NAME @ $PSC_IP"
+          echo "Tag: ${{ needs.resolve.outputs.tag }} | SHA: ${{ needs.resolve.outputs.sha }}"
+          alembic history --indicate-current
+          alembic upgrade head
+          echo "✅ Migraciones OK"
   # ─────────────────────────────────────────
   # JOB 4: Gate de aprobación humana
   # Se aplica automáticamente mediante la protección del GitHub Environment poc-prod.
