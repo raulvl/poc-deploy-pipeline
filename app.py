@@ -82,7 +82,7 @@ def schema():
             SELECT indexname, tablename
             FROM pg_indexes
             WHERE schemaname = %s
-              AND indexname NOT LIKE '%_pkey'
+              AND indexname NOT LIKE '%%_pkey'
             ORDER BY tablename, indexname
         """,
             (SCHEMA,),
